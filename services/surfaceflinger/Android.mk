@@ -15,6 +15,7 @@ LOCAL_SRC_FILES := \
     GpuService.cpp \
     Layer.cpp \
     LayerDim.cpp \
+    LayerBlur.cpp \
     MessageQueue.cpp \
     MonitoredProducer.cpp \
     SurfaceFlingerConsumer.cpp \
@@ -36,7 +37,8 @@ LOCAL_SRC_FILES := \
     RenderEngine/Texture.cpp \
     RenderEngine/GLES10RenderEngine.cpp \
     RenderEngine/GLES11RenderEngine.cpp \
-    RenderEngine/GLES20RenderEngine.cpp
+    RenderEngine/GLES20RenderEngine.cpp \
+    DisplayUtils.cpp
 
 LOCAL_C_INCLUDES := \
 	frameworks/native/vulkan/include \
@@ -44,11 +46,15 @@ LOCAL_C_INCLUDES := \
 	external/vulkan-validation-layers/libs/vkjson
 
 LOCAL_CFLAGS := -DLOG_TAG=\"SurfaceFlinger\"
+
+ifeq ($(TARGET_BUILD_VARIANT),userdebug)
+LOCAL_CFLAGS += -DDEBUG_CONT_DUMPSYS
+endif
+
 LOCAL_CFLAGS += -DGL_GLEXT_PROTOTYPES -DEGL_EGLEXT_PROTOTYPES
 #LOCAL_CFLAGS += -DENABLE_FENCE_TRACKING
 
-USE_HWC2 := false
-ifeq ($(USE_HWC2),true)
+ifeq ($(TARGET_USES_HWC2),true)
     LOCAL_CFLAGS += -DUSE_HWC2
     LOCAL_SRC_FILES += \
         SurfaceFlinger.cpp \
@@ -130,6 +136,26 @@ LOCAL_SHARED_LIBRARIES := \
     libpowermanager \
     libvulkan
 
+ifeq ($(TARGET_USES_QCOM_BSP), true)
+  ifeq ($(TARGET_SUPPORTS_WEARABLES),true)
+    LOCAL_C_INCLUDES += $(BOARD_DISPLAY_HAL)/libgralloc
+    LOCAL_C_INCLUDES += $(BOARD_DISPLAY_HAL)/libqdutils
+  else
+    LOCAL_C_INCLUDES += $(call project-path-for,qcom-display)/libgralloc
+    LOCAL_C_INCLUDES += $(call project-path-for,qcom-display)/libqdutils
+  endif
+  LOCAL_SHARED_LIBRARIES += libqdutils
+  LOCAL_SHARED_LIBRARIES += libqdMetaData
+  LOCAL_CFLAGS += -DQTI_BSP
+  ifneq ($(TARGET_USES_HWC2),true)
+  LOCAL_SRC_FILES += \
+    ExSurfaceFlinger/ExLayer.cpp \
+    ExSurfaceFlinger/ExSurfaceFlinger.cpp \
+    ExSurfaceFlinger/ExVirtualDisplaySurface.cpp \
+    ExSurfaceFlinger/ExHWComposer.cpp
+  endif
+endif
+
 LOCAL_MODULE := libsurfaceflinger
 
 LOCAL_CFLAGS += -Wall -Werror -Wunused -Wunreachable-code
@@ -150,6 +176,10 @@ LOCAL_INIT_RC := surfaceflinger.rc
 
 ifneq ($(ENABLE_CPUSETS),)
     LOCAL_CFLAGS += -DENABLE_CPUSETS
+endif
+
+ifeq ($(TARGET_USES_HWC2),true)
+    LOCAL_CFLAGS += -DUSE_HWC2
 endif
 
 LOCAL_SRC_FILES := \

@@ -40,8 +40,9 @@ class GLES11RenderEngine : public RenderEngine {
     GLint mMaxTextureSize;
 
     virtual void bindImageAsFramebuffer(EGLImageKHR image,
-            uint32_t* texName, uint32_t* fbName, uint32_t* status);
-    virtual void unbindFramebuffer(uint32_t texName, uint32_t fbName);
+            uint32_t* texName, uint32_t* fbName, uint32_t* status, bool useReadPixels,
+            int reqWidth, int reqHeight);
+    virtual void unbindFramebuffer(uint32_t texName, uint32_t fbName, bool useReadPixels);
 
 public:
     GLES11RenderEngine();
@@ -57,16 +58,20 @@ protected:
     virtual void setupLayerBlending(bool premultipliedAlpha, bool opaque,
             float alpha) override;
     virtual void setupDimLayerBlending(float alpha) override;
+    virtual void setupDimLayerBlendingWithColor(uint32_t color, float alpha) override;
 #else
     virtual void setupLayerBlending(bool premultipliedAlpha, bool opaque,
             int alpha);
     virtual void setupDimLayerBlending(int alpha);
+    virtual void setupDimLayerBlendingWithColor(uint32_t color, int alpha);
 #endif
     virtual void setupLayerTexturing(const Texture& texture);
     virtual void setupLayerBlackedOut();
     virtual void setupFillWithColor(float r, float g, float b, float a) ;
     virtual void disableTexturing();
     virtual void disableBlending();
+    virtual void setupLayerMasking(const Texture& /*maskTexture*/, float /*alphaThreshold*/) {}
+    virtual void disableLayerMasking() {}
 
     virtual void drawMesh(const Mesh& mesh);
 

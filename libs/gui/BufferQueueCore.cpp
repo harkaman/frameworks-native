@@ -111,7 +111,7 @@ BufferQueueCore::BufferQueueCore(const sp<IGraphicBufferAlloc>& allocator) :
 
 BufferQueueCore::~BufferQueueCore() {}
 
-void BufferQueueCore::dump(String8& result, const char* prefix) const {
+void BufferQueueCore::dumpState(String8& result, const char* prefix) const {
     Mutex::Autolock lock(mMutex);
 
     String8 fifo;
@@ -240,6 +240,16 @@ void BufferQueueCore::freeAllBuffersLocked() {
     for (auto& b : mQueue) {
         b.mIsStale = true;
     }
+
+    VALIDATE_CONSISTENCY();
+}
+
+void BufferQueueCore::discardFreeBuffersLocked() {
+    for (int s : mFreeBuffers) {
+        mFreeSlots.insert(s);
+        clearBufferSlotLocked(s);
+    }
+    mFreeBuffers.clear();
 
     VALIDATE_CONSISTENCY();
 }

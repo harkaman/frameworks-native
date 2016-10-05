@@ -1,4 +1,8 @@
 /*
+ * Copyright (c) 2016, The Linux Foundation. All rights reserved.
+ * Not a Contribution
+ *
+ *
  * Copyright 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -92,14 +96,29 @@ void GLES11RenderEngine::setViewportAndProjection(
         case Transform::ROT_0:
             break;
         case Transform::ROT_90:
-            glRotatef(90, 0, 0, 1);
-            break;
-        case Transform::ROT_180:
-            glRotatef(180, 0, 0, 1);
-            break;
-        case Transform::ROT_270:
+        {
+            float x1 = (l+r)/2;
+            float y1 = (t+b)/2;
+            glTranslatef(x1-y1, x1+y1, 0);
             glRotatef(270, 0, 0, 1);
             break;
+        }
+        case Transform::ROT_180:
+        {
+            float x1 = (l+r)/2;
+            float y1 = (t+b)/2;
+            glTranslatef(x1*2, y1*2, 0);
+            glRotatef(180, 0, 0, 1);
+            break;
+        }
+        case Transform::ROT_270:
+        {
+            float x1 = (l+r)/2;
+            float y1 = (t+b)/2;
+            glTranslatef(x1+y1, y1-x1, 0);
+            glRotatef(90, 0, 0, 1);
+            break;
+        }
         default:
             break;
     }
@@ -202,6 +221,36 @@ void GLES11RenderEngine::setupDimLayerBlending(int alpha) {
 #endif
 }
 
+#ifdef USE_HWC2
+void GLES11RenderEngine::setupDimLayerBlendingWithColor(uint32_t color, float alpha) {
+#else
+void GLES11RenderEngine::setupDimLayerBlendingWithColor(uint32_t color, int alpha) {
+#endif
+    // SF Client sets the color on Dim Layer in RGBA format
+    float r = float((color & 0xFF000000) >> 24);
+    float g = float((color & 0x00FF0000) >> 16);
+    float b = float((color & 0x0000FF00) >> 8);
+    float a = float(color & 0x000000FF);
+
+    glDisable(GL_TEXTURE_EXTERNAL_OES);
+    glDisable(GL_TEXTURE_2D);
+#ifdef USE_HWC2
+    if (alpha == 1.0f) {
+#else
+    if (alpha == 0xFF) {
+#endif
+        glDisable(GL_BLEND);
+    } else {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    }
+#ifdef USE_HWC2
+    glColor4f(r, g, b, (a / 255.0f) * alpha);
+#else
+    glColor4f(r, g, b, (a / 255.0f) * (alpha / 255.0f));
+#endif
+}
+
 void GLES11RenderEngine::setupLayerTexturing(const Texture& texture) {
     GLuint target = texture.getTextureTarget();
     glBindTexture(target, texture.getTextureName());
@@ -239,28 +288,46 @@ void GLES11RenderEngine::disableBlending() {
 }
 
 void GLES11RenderEngine::bindImageAsFramebuffer(EGLImageKHR image,
-        uint32_t* texName, uint32_t* fbName, uint32_t* status) {
+        uint32_t* texName, uint32_t* fbName, uint32_t* status,
+        bool useReadPixels, int reqWidth, int reqHeight) {
     GLuint tname, name;
-    // turn our EGLImage into a texture
-    glGenTextures(1, &tname);
-    glBindTexture(GL_TEXTURE_2D, tname);
-    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImageOES)image);
+    if (!useReadPixels) {
+        // turn our EGLImage into a texture
+        glGenTextures(1, &tname);
+        glBindTexture(GL_TEXTURE_2D, tname);
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImageOES)image);
 
-    // create a Framebuffer Object to render into
-    glGenFramebuffersOES(1, &name);
-    glBindFramebufferOES(GL_FRAMEBUFFER_OES, name);
-    glFramebufferTexture2DOES(GL_FRAMEBUFFER_OES,
-            GL_COLOR_ATTACHMENT0_OES, GL_TEXTURE_2D, tname, 0);
+        // create a Framebuffer Object to render into
+        glGenFramebuffersOES(1, &name);
+        glBindFramebufferOES(GL_FRAMEBUFFER_OES, name);
+        glFramebufferTexture2DOES(GL_FRAMEBUFFER_OES,
+                GL_COLOR_ATTACHMENT0_OES, GL_TEXTURE_2D, tname, 0);
+    } else {
+        // since we're going to use glReadPixels() anyways,
+        // use an intermediate renderbuffer instead
+        glGenRenderbuffersOES(1, &tname);
+        glBindRenderbufferOES(GL_RENDERBUFFER_OES, tname);
+        glRenderbufferStorageOES(GL_RENDERBUFFER_OES, GL_RGBA8_OES, reqWidth, reqHeight);
+        // create a FBO to render into
+        glGenFramebuffersOES(1, &name);
+        glBindFramebufferOES(GL_FRAMEBUFFER_OES, name);
+        glFramebufferRenderbufferOES(GL_FRAMEBUFFER_OES, GL_COLOR_ATTACHMENT0_OES,
+                GL_RENDERBUFFER_OES, tname);
+    }
 
     *status = glCheckFramebufferStatusOES(GL_FRAMEBUFFER_OES);
     *texName = tname;
     *fbName = name;
 }
 
-void GLES11RenderEngine::unbindFramebuffer(uint32_t texName, uint32_t fbName) {
+void GLES11RenderEngine::unbindFramebuffer(uint32_t texName, uint32_t fbName,
+        bool useReadPixels) {
     glBindFramebufferOES(GL_FRAMEBUFFER_OES, 0);
     glDeleteFramebuffersOES(1, &fbName);
-    glDeleteTextures(1, &texName);
+    if (!useReadPixels)
+        glDeleteTextures(1, &texName);
+    else
+        glDeleteRenderbuffersOES(1, &texName);
 }
 
 void GLES11RenderEngine::setupFillWithColor(float r, float g, float b, float a) {

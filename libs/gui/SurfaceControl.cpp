@@ -1,4 +1,8 @@
 /*
+ * Copyright (c) 2016, The Linux Foundation. All rights reserved.
+ * Not a Contribution
+ *
+ *
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -107,6 +111,26 @@ status_t SurfaceControl::setLayer(uint32_t layer) {
     if (err < 0) return err;
     return mClient->setLayer(mHandle, layer);
 }
+status_t SurfaceControl::setBlur(float blur) {
+    status_t err = validate();
+    if (err < 0) return err;
+    return mClient->setBlur(mHandle, blur);
+}
+status_t SurfaceControl::setBlurMaskSurface(const sp<SurfaceControl>& maskSurface) {
+    status_t err = validate();
+    if (err < 0) return err;
+    return mClient->setBlurMaskSurface(mHandle, maskSurface != 0 ? maskSurface->mHandle : 0);
+}
+status_t SurfaceControl::setBlurMaskSampling(uint32_t blurMaskSampling) {
+    status_t err = validate();
+    if (err < 0) return err;
+    return mClient->setBlurMaskSampling(mHandle, blurMaskSampling);
+}
+status_t SurfaceControl::setBlurMaskAlphaThreshold(float alpha) {
+    status_t err = validate();
+    if (err < 0) return err;
+    return mClient->setBlurMaskAlphaThreshold(mHandle, alpha);
+}
 status_t SurfaceControl::setPosition(float x, float y) {
     status_t err = validate();
     if (err < 0) return err;
@@ -161,6 +185,11 @@ status_t SurfaceControl::setFinalCrop(const Rect& crop) {
     status_t err = validate();
     if (err < 0) return err;
     return mClient->setFinalCrop(mHandle, crop);
+}
+status_t SurfaceControl::setColor(uint32_t color) {
+    status_t err = validate();
+    if (err < 0) return err;
+    return mClient->setColor(mHandle, color);
 }
 
 status_t SurfaceControl::deferTransactionUntil(sp<IBinder> handle,

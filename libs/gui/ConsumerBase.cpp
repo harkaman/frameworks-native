@@ -235,11 +235,20 @@ status_t ConsumerBase::setDefaultBufferDataSpace(
     return mConsumer->setDefaultBufferDataSpace(defaultDataSpace);
 }
 
-void ConsumerBase::dump(String8& result) const {
-    dump(result, "");
+status_t ConsumerBase::discardFreeBuffers() {
+    Mutex::Autolock _l(mMutex);
+    if (mAbandoned) {
+        CB_LOGE("discardFreeBuffers: ConsumerBase is abandoned!");
+        return NO_INIT;
+    }
+    return mConsumer->discardFreeBuffers();
 }
 
-void ConsumerBase::dump(String8& result, const char* prefix) const {
+void ConsumerBase::dumpState(String8& result) const {
+    dumpState(result, "");
+}
+
+void ConsumerBase::dumpState(String8& result, const char* prefix) const {
     Mutex::Autolock _l(mMutex);
     dumpLocked(result, prefix);
 }
@@ -248,7 +257,7 @@ void ConsumerBase::dumpLocked(String8& result, const char* prefix) const {
     result.appendFormat("%smAbandoned=%d\n", prefix, int(mAbandoned));
 
     if (!mAbandoned) {
-        mConsumer->dump(result, prefix);
+        mConsumer->dumpState(result, prefix);
     }
 }
 

@@ -93,7 +93,13 @@ checkGlesEmulationStatus(void)
         return 0;
     }
 
-    /* First, check for qemu=1 */
+    /* First check if forced from HW */
+    property_get("persist.sys.force_sw_gles", prop, "0");
+    if (atoi(prop) == 1) {
+        return 0;
+    }
+
+    /* Check for qemu=1 */
     property_get("ro.kernel.qemu",prop,"0");
     if (atoi(prop) != 1)
         return -1;

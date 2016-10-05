@@ -51,6 +51,7 @@ enum {
     SET_CONSUMER_USAGE_BITS,
     SET_TRANSFORM_HINT,
     GET_SIDEBAND_STREAM,
+    DISCARD_FREE_BUFFERS,
     DUMP,
 };
 
@@ -260,7 +261,22 @@ public:
         return stream;
     }
 
-    virtual void dump(String8& result, const char* prefix) const {
+    virtual status_t discardFreeBuffers() {
+        Parcel data, reply;
+        data.writeInterfaceToken(IGraphicBufferConsumer::getInterfaceDescriptor());
+        status_t error = remote()->transact(DISCARD_FREE_BUFFERS, data, &reply);
+        if (error != NO_ERROR) {
+            return error;
+        }
+        int32_t result = NO_ERROR;
+        error = reply.readInt32(&result);
+        if (error != NO_ERROR) {
+            return error;
+        }
+        return result;
+    }
+
+    virtual void dumpState(String8& result, const char* prefix) const {
         Parcel data, reply;
         data.writeInterfaceToken(IGraphicBufferConsumer::getInterfaceDescriptor());
         data.writeString8(result);
@@ -409,11 +425,17 @@ status_t BnGraphicBufferConsumer::onTransact(
             }
             return NO_ERROR;
         }
+        case DISCARD_FREE_BUFFERS: {
+            CHECK_INTERFACE(IGraphicBufferConsumer, data, reply);
+            status_t result = discardFreeBuffers();
+            status_t error = reply->writeInt32(result);
+            return error;
+        }
         case DUMP: {
             CHECK_INTERFACE(IGraphicBufferConsumer, data, reply);
             String8 result = data.readString8();
             String8 prefix = data.readString8();
-            static_cast<IGraphicBufferConsumer*>(this)->dump(result, prefix);
+            static_cast<IGraphicBufferConsumer*>(this)->dumpState(result, prefix);
             reply->writeString8(result);
             return NO_ERROR;
         }
