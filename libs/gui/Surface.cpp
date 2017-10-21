@@ -1181,7 +1181,8 @@ void Surface::setSurfaceDamage(android_native_rect_t* rects, size_t numRects) {
 static status_t copyBlt(
         const sp<GraphicBuffer>& dst,
         const sp<GraphicBuffer>& src,
-        const Region& reg)
+        const Region& reg,
+        int *dstFenceFd)
 {
     // src and dst with, height and format must be identical. no verification
     // is done here.
@@ -1192,9 +1193,10 @@ static status_t copyBlt(
     ALOGE_IF(err, "error locking src buffer %s", strerror(-err));
 
     uint8_t* dst_bits = NULL;
-    err = dst->lock(GRALLOC_USAGE_SW_WRITE_OFTEN, reg.bounds(),
-            reinterpret_cast<void**>(&dst_bits));
+    err = dst->lockAsync(GRALLOC_USAGE_SW_WRITE_OFTEN, reg.bounds(),
+            reinterpret_cast<void**>(&dst_bits), *dstFenceFd);
     ALOGE_IF(err, "error locking dst buffer %s", strerror(-err));
+    *dstFenceFd = -1;
 
     Region::const_iterator head(reg.begin());
     Region::const_iterator tail(reg.end());
@@ -1228,7 +1230,7 @@ static status_t copyBlt(
         src->unlock();
 
     if (dst_bits)
-        dst->unlock();
+        dst->unlockAsync(dstFenceFd);
 
     return err;
 }
@@ -1269,6 +1271,7 @@ status_t Surface::lock(
         }
 
         // figure out if we can copy the frontbuffer back
+        int backBufferSlot(getSlotFromBufferLocked(backBuffer.get()));
         const sp<GraphicBuffer>& frontBuffer(mPostedBuffer);
         const bool canCopyBack = (frontBuffer != 0 &&
                 backBuffer->width  == frontBuffer->width &&
@@ -1276,15 +1279,24 @@ status_t Surface::lock(
                 backBuffer->format == frontBuffer->format);
 
         if (canCopyBack) {
-            // copy the area that is invalid and not repainted this round
-            const Region copyback(mDirtyRegion.subtract(newDirtyRegion));
-            if (!copyback.isEmpty())
-                copyBlt(backBuffer, frontBuffer, copyback);
+            Mutex::Autolock lock(mMutex);
+            Region oldDirtyRegion;
+            if(mSlots[backBufferSlot].dirtyRegion.isEmpty()) {
+                oldDirtyRegion.set(bounds);
+            } else {
+                for(int i = 0 ; i < NUM_BUFFER_SLOTS; i++ ) {
+                    if(i != backBufferSlot && !mSlots[i].dirtyRegion.isEmpty())
+                        oldDirtyRegion.orSelf(mSlots[i].dirtyRegion);
+                }
+            }
+            const Region copyback(oldDirtyRegion.subtract(newDirtyRegion));
+            if (!copyback.isEmpty()) {
+                copyBlt(backBuffer, frontBuffer, copyback, &fenceFd);
+            }
         } else {
             // if we can't copy-back anything, modify the user's dirty
             // region to make sure they redraw the whole buffer
             newDirtyRegion.set(bounds);
-            mDirtyRegion.clear();
             Mutex::Autolock lock(mMutex);
             for (size_t i=0 ; i<NUM_BUFFER_SLOTS ; i++) {
                 mSlots[i].dirtyRegion.clear();
@@ -1294,15 +1306,9 @@ status_t Surface::lock(
 
         { // scope for the lock
             Mutex::Autolock lock(mMutex);
-            int backBufferSlot(getSlotFromBufferLocked(backBuffer.get()));
-            if (backBufferSlot >= 0) {
-                Region& dirtyRegion(mSlots[backBufferSlot].dirtyRegion);
-                mDirtyRegion.subtract(dirtyRegion);
-                dirtyRegion = newDirtyRegion;
-            }
+            mSlots[backBufferSlot].dirtyRegion = newDirtyRegion;
         }
 
-        mDirtyRegion.orSelf(newDirtyRegion);
         if (inOutDirtyBounds) {
             *inOutDirtyBounds = newDirtyRegion.getBounds();
         }

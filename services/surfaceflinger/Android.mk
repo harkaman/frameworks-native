@@ -15,6 +15,7 @@ LOCAL_SRC_FILES := \
     GpuService.cpp \
     Layer.cpp \
     LayerDim.cpp \
+    LayerBlur.cpp \
     MessageQueue.cpp \
     MonitoredProducer.cpp \
     SurfaceFlingerConsumer.cpp \
@@ -36,7 +37,8 @@ LOCAL_SRC_FILES := \
     RenderEngine/Texture.cpp \
     RenderEngine/GLES10RenderEngine.cpp \
     RenderEngine/GLES11RenderEngine.cpp \
-    RenderEngine/GLES20RenderEngine.cpp
+    RenderEngine/GLES20RenderEngine.cpp \
+    DisplayUtils.cpp
 
 LOCAL_C_INCLUDES := \
 	frameworks/native/vulkan/include \
@@ -44,6 +46,11 @@ LOCAL_C_INCLUDES := \
 	external/vulkan-validation-layers/libs/vkjson
 
 LOCAL_CFLAGS := -DLOG_TAG=\"SurfaceFlinger\"
+
+ifeq ($(TARGET_BUILD_VARIANT),userdebug)
+LOCAL_CFLAGS += -DDEBUG_CONT_DUMPSYS
+endif
+
 LOCAL_CFLAGS += -DGL_GLEXT_PROTOTYPES -DEGL_EGLEXT_PROTOTYPES
 
 ifeq ($(TARGET_USES_HWC2),true)
@@ -81,6 +88,10 @@ endif
 
 ifeq ($(TARGET_RUNNING_WITHOUT_SYNC_FRAMEWORK),true)
     LOCAL_CFLAGS += -DRUNNING_WITHOUT_SYNC_FRAMEWORK
+endif
+
+ifeq ($(TARGET_HAS_HH_VSYNC_ISSUE),true)
+    LOCAL_CFLAGS += -DHH_VSYNC_ISSUE
 endif
 
 # The following two BoardConfig variables define (respectively):
@@ -127,6 +138,10 @@ else
     LOCAL_CFLAGS += -DMAX_VIRTUAL_DISPLAY_DIMENSION=0
 endif
 
+ifeq ($(BOARD_USE_BGRA_8888),true)
+    LOCAL_CFLAGS += -DUSE_BGRA_8888
+endif
+
 LOCAL_CFLAGS += -fvisibility=hidden -Werror=format
 LOCAL_CFLAGS += -std=c++14
 
@@ -145,6 +160,41 @@ LOCAL_SHARED_LIBRARIES := \
     libgui \
     libpowermanager \
     libvulkan
+
+ifeq ($(TARGET_USES_QCOM_BSP), true)
+  ifeq ($(TARGET_SUPPORTS_WEARABLES),true)
+    LOCAL_C_INCLUDES += $(BOARD_DISPLAY_HAL)/libgralloc
+    LOCAL_C_INCLUDES += $(BOARD_DISPLAY_HAL)/libqdutils
+  else
+    LOCAL_C_INCLUDES += $(TARGET_OUT_HEADERS)/qcom/display
+  endif
+  LOCAL_SHARED_LIBRARIES += libqdutils
+  LOCAL_SHARED_LIBRARIES += libqdMetaData
+  LOCAL_CFLAGS += -DQTI_BSP
+  LOCAL_SRC_FILES += \
+    ExSurfaceFlinger/ExLayer.cpp \
+    ExSurfaceFlinger/ExSurfaceFlinger.cpp \
+    ExSurfaceFlinger/ExVirtualDisplaySurface.cpp \
+    ExSurfaceFlinger/ExHWComposer.cpp
+endif
+
+ifeq ($(BOARD_USES_HWC_SERVICES), true)
+    LOCAL_CFLAGS += -DUSES_HWC_SERVICES
+    LOCAL_SHARED_LIBRARIES += libExynosHWCService
+    LOCAL_C_INCLUDES += \
+        $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include \
+        $(TOP)/hardware/samsung_slsi-$(TARGET_SLSI_VARIANT)/$(TARGET_BOARD_PLATFORM)/libhwcService \
+        $(TOP)/hardware/samsung_slsi-$(TARGET_SLSI_VARIANT)/$(TARGET_BOARD_PLATFORM)/include \
+        $(TOP)/hardware/samsung_slsi-$(TARGET_SLSI_VARIANT)/$(TARGET_SOC)/include \
+        $(TOP)/hardware/samsung_slsi-$(TARGET_SLSI_VARIANT)/$(TARGET_SOC)/libhwcmodule \
+        $(TOP)/hardware/samsung_slsi-$(TARGET_SLSI_VARIANT)/exynos/libhwc \
+        $(TOP)/hardware/samsung_slsi-$(TARGET_SLSI_VARIANT)/exynos/include \
+        $(TOP)/hardware/samsung_slsi-$(TARGET_SLSI_VARIANT)/exynos/libexynosutils \
+        $(TOP)/system/core/libsync/include
+
+LOCAL_ADDITIONAL_DEPENDENCIES := \
+        $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr
+endif
 
 LOCAL_MODULE := libsurfaceflinger
 

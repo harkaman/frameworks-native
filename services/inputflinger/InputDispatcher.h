@@ -36,6 +36,7 @@
 #include "InputWindow.h"
 #include "InputApplication.h"
 #include "InputListener.h"
+#include <ui/DisplayInfo.h>
 
 
 namespace android {
@@ -257,7 +258,7 @@ public:
             uint32_t switchValues, uint32_t switchMask, uint32_t policyFlags) = 0;
 
     /* Poke user activity for an event dispatched to a window. */
-    virtual void pokeUserActivity(nsecs_t eventTime, int32_t eventType) = 0;
+    virtual void pokeUserActivity(nsecs_t eventTime, int32_t eventType, int32_t keyCode) = 0;
 
     /* Checks whether a given application pid/uid has permission to inject input events
      * into other applications.
@@ -1041,9 +1042,11 @@ private:
 
     int32_t findFocusedWindowTargetsLocked(nsecs_t currentTime, const EventEntry* entry,
             Vector<InputTarget>& inputTargets, nsecs_t* nextWakeupTime);
-    int32_t findTouchedWindowTargetsLocked(nsecs_t currentTime, const MotionEntry* entry,
+    int32_t findTouchedWindowTargetsLocked(nsecs_t currentTime, MotionEntry* entry,
             Vector<InputTarget>& inputTargets, nsecs_t* nextWakeupTime,
             bool* outConflictingPointerActions);
+    void singleHandModePreProcessLocked(MotionEntry* entry);
+    bool singlehandRegionContainsPointLocked(int32_t x, int32_t y, bool left) const;
 
     void addWindowTargetLocked(const sp<InputWindowHandle>& windowHandle,
             int32_t targetFlags, BitSet32 pointerIds, Vector<InputTarget>& inputTargets);
@@ -1136,6 +1139,8 @@ private:
     void traceInboundQueueLengthLocked();
     void traceOutboundQueueLengthLocked(const sp<Connection>& connection);
     void traceWaitQueueLengthLocked(const sp<Connection>& connection);
+    bool mLastPointDownOuter;
+    DisplayInfo dinfo;
 };
 
 /* Enqueues and dispatches input events, endlessly. */

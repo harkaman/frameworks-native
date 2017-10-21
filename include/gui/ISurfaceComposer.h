@@ -60,7 +60,10 @@ public:
 
     enum {
         eDisplayIdMain = 0,
-        eDisplayIdHdmi = 1
+        eDisplayIdHdmi = 1,
+#ifdef QTI_BSP
+        eDisplayIdTertiary = 2
+#endif
     };
 
     enum Rotation {
@@ -151,7 +154,8 @@ public:
             Rect sourceCrop, uint32_t reqWidth, uint32_t reqHeight,
             uint32_t minLayerZ, uint32_t maxLayerZ,
             bool useIdentityTransform,
-            Rotation rotation = eRotateNone) = 0;
+            Rotation rotation = eRotateNone,
+            bool isCpuConsumer = false) = 0;
 
     /* Clears the frame statistics for animations.
      *

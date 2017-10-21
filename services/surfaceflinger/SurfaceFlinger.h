@@ -60,6 +60,8 @@
 #include "DisplayHardware/HWComposer.h"
 #include "Effects/Daltonizer.h"
 
+#include "FrameRateHelper.h"
+
 #include <map>
 #include <string>
 
@@ -73,6 +75,7 @@ class EventThread;
 class IGraphicBufferAlloc;
 class Layer;
 class LayerDim;
+class LayerBlur;
 class Surface;
 class RenderEngine;
 class EventControlThread;
@@ -91,6 +94,10 @@ class SurfaceFlinger : public BnSurfaceComposer,
                        private HWComposer::EventHandler
 {
 public:
+#ifdef QTI_BSP
+    friend class ExSurfaceFlinger;
+#endif
+
     static char const* getServiceName() ANDROID_API {
         return "SurfaceFlinger";
     }
@@ -152,7 +159,9 @@ private:
     friend class Client;
     friend class DisplayEventConnection;
     friend class Layer;
+    friend class LayerDim;
     friend class MonitoredProducer;
+    friend class LayerBlur;
 
     // This value is specified in number of frames.  Log frame stats at most
     // every half hour.
@@ -221,7 +230,8 @@ private:
             const sp<IGraphicBufferProducer>& producer,
             Rect sourceCrop, uint32_t reqWidth, uint32_t reqHeight,
             uint32_t minLayerZ, uint32_t maxLayerZ,
-            bool useIdentityTransform, ISurfaceComposer::Rotation rotation);
+            bool useIdentityTransform, ISurfaceComposer::Rotation rotation,
+            bool isCpuConsumer);
     virtual status_t getDisplayStats(const sp<IBinder>& display,
             DisplayStatInfo* stats);
     virtual status_t getDisplayConfigs(const sp<IBinder>& display,
@@ -254,6 +264,47 @@ private:
     virtual void onVSyncReceived(int type, nsecs_t timestamp);
     virtual void onHotplugReceived(int disp, bool connected);
 
+    /* ------------------------------------------------------------------------
+     * Extensions
+     */
+    virtual void updateExtendedMode() { }
+
+    virtual void getIndexLOI(size_t /*dpy*/,
+                     const LayerVector& /*currentLayers*/,
+                     bool& /*bIgnoreLayers*/,
+                     int& /*indexLOI*/) { }
+
+    virtual void delayDPTransactionIfNeeded(
+                     const Vector<DisplayState>& /*displays*/) { }
+
+
+
+    virtual void isfreezeSurfacePresent(
+                     bool& freezeSurfacePresent,
+                     const sp<const DisplayDevice>& /*hw*/,
+                     const int32_t& /*id*/) { freezeSurfacePresent = false; }
+
+    virtual void updateVisibleRegionsDirty() { }
+#ifndef USE_HWC2
+    virtual void setOrientationEventControl(
+                     bool& /*freezeSurfacePresent*/,
+                     const int32_t& /*id*/) { }
+    virtual bool canDrawLayerinScreenShot(
+                     const sp<const DisplayDevice>& hw,
+                     const sp<Layer>& layer);
+
+    virtual bool updateLayerVisibleNonTransparentRegion(
+                     const int& dpy, const sp<Layer>& layer,
+                     bool& bIgnoreLayers, int& indexLOI,
+                     uint32_t layerStack, const int& i);
+
+    virtual void  drawWormHoleIfRequired(HWComposer::LayerListIterator &cur,
+                     const HWComposer::LayerListIterator &end,
+                     const sp<const DisplayDevice>& hw,
+                     const Region& region);
+#endif
+    virtual bool isS3DLayerPresent(const sp<const DisplayDevice>& /*hw*/)
+        { return false; };
     /* ------------------------------------------------------------------------
      * Message handling
      */
@@ -317,6 +368,10 @@ private:
             uint32_t w, uint32_t h, uint32_t flags, sp<IBinder>* outHandle,
             sp<IGraphicBufferProducer>* outGbp, sp<Layer>* outLayer);
 
+    status_t createBlurLayer(const sp<Client>& client, const String8& name,
+            uint32_t w, uint32_t h, uint32_t flags, sp<IBinder>* outHandle,
+            sp<IGraphicBufferProducer>* outGbp, sp<Layer>* outLayer);
+
     // called in response to the window-manager calling
     // ISurfaceComposerClient::destroySurface()
     status_t onLayerRemoved(const sp<Client>& client, const sp<IBinder>& handle);
@@ -353,7 +408,7 @@ private:
             Rect sourceCrop, uint32_t reqWidth, uint32_t reqHeight,
             uint32_t minLayerZ, uint32_t maxLayerZ,
             bool useIdentityTransform, Transform::orientation_flags rotation,
-            bool isLocalScreenshot);
+            bool isLocalScreenshot, bool useReadPixels);
 
     /* ------------------------------------------------------------------------
      * EGL
@@ -408,7 +463,7 @@ private:
      * Compositing
      */
     void invalidateHwcGeometry();
-    static void computeVisibleRegions(
+    void computeVisibleRegions(size_t dpy,
             const LayerVector& currentLayers, uint32_t layerStack,
             Region& dirtyRegion, Region& opaqueRegion);
 
@@ -457,6 +512,7 @@ private:
     void logFrameStats();
 
     void dumpStaticScreenStats(String8& result) const;
+    virtual void dumpDrawCycle(bool /* prePrepare */ ) { }
 
     void recordBufferingStats(const char* layerName,
             std::vector<OccupancyTracker::Segment>&& history);
@@ -548,6 +604,9 @@ private:
     bool mPrimaryHWVsyncEnabled;
     bool mHWVsyncAvailable;
 
+    // Panel hardware rotation
+    int32_t mHardwareRotation;
+
     /* ------------------------------------------------------------------------
      * Feature prototyping
      */
@@ -560,6 +619,9 @@ private:
     mat4 mPreviousColorMatrix;
     mat4 mColorMatrix;
     bool mHasColorMatrix;
+
+    mat4 mSecondaryColorMatrix;
+    bool mHasSecondaryColorMatrix;
 
     // Static screen stats
     bool mHasPoweredOff;
@@ -590,6 +652,16 @@ private:
     };
     mutable Mutex mBufferingStatsMutex;
     std::unordered_map<std::string, BufferingStats> mBufferingStats;
+
+    FrameRateHelper mFrameRateHelper;
+
+    /*
+     * A number that increases on every new frame composition and screen capture.
+     * LayerBlur can speed up it's drawing by caching texture using this variable
+     * if multiple LayerBlur objects draw in one frame composition.
+     * In case of display mirroring, this variable should be increased on every display.
+     */
+    uint32_t mActiveFrameSequence;
 };
 
 }; // namespace android

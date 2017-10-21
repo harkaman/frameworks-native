@@ -1,4 +1,8 @@
 /*
+ * Copyright (c) 2016, The Linux Foundation. All rights reserved.
+ * Not a Contribution
+ *
+ *
  * Copyright 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,7 +44,7 @@ namespace android {
 // ---------------------------------------------------------------------------
 
 GLES20RenderEngine::GLES20RenderEngine() :
-        mVpWidth(0), mVpHeight(0) {
+        mVpWidth(0), mVpHeight(0), mProjectionRotation(Transform::ROT_0) {
 
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &mMaxTextureSize);
     glGetIntegerv(GL_MAX_VIEWPORT_DIMS, mMaxViewportDims);
@@ -107,6 +111,12 @@ void GLES20RenderEngine::setViewportAndProjection(
         case Transform::ROT_270:
             m = mat4::rotate(rot90InRadians * 3.0f, vec3(0,0,1)) * m;
             break;
+        case Transform::FLIP_H:
+            m = mat4::scale(vec4(-1, 1, 1, 1)) * m;
+            break;
+        case Transform::FLIP_V:
+            m = mat4::scale(vec4(1, -1, 1, 1)) * m;
+            break;
         default:
             break;
     }
@@ -115,6 +125,9 @@ void GLES20RenderEngine::setViewportAndProjection(
     mState.setProjectionMatrix(m);
     mVpWidth = vpw;
     mVpHeight = vph;
+    mProjectionSourceCrop = sourceCrop;
+    mProjectionYSwap = yswap;
+    mProjectionRotation = rotation;
 }
 
 #ifdef USE_HWC2
@@ -170,6 +183,39 @@ void GLES20RenderEngine::setupDimLayerBlending(int alpha) {
     }
 }
 
+#ifdef USE_HWC2
+void GLES20RenderEngine::setupDimLayerBlendingWithColor(uint32_t color, float alpha) {
+#else
+void GLES20RenderEngine::setupDimLayerBlendingWithColor(uint32_t color, int alpha) {
+#endif
+    // SF Client sets the color on Dim Layer in RGBA format
+    float r = float((color & 0xFF000000) >> 24);
+    float g = float((color & 0x00FF0000) >> 16);
+    float b = float((color & 0x0000FF00) >> 8);
+    float a = float(color & 0x000000FF);
+
+    mState.setPlaneAlpha(1.0f);
+    mState.setPremultipliedAlpha(true);
+    mState.setOpaque(false);
+#ifdef USE_HWC2
+    mState.setColor(r, g, b, (a / 255.0f) * alpha);
+#else
+    mState.setColor(r, g, b, (a / 255.0f) * (alpha / 255.0f));
+#endif
+    mState.disableTexture();
+
+#ifdef USE_HWC2
+    if (alpha == 1.0f) {
+#else
+    if (alpha == 0xFF) {
+#endif
+        glDisable(GL_BLEND);
+    } else {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    }
+}
+
 void GLES20RenderEngine::setupLayerTexturing(const Texture& texture) {
     GLuint target = texture.getTextureTarget();
     glBindTexture(target, texture.getTextureName());
@@ -208,27 +254,44 @@ void GLES20RenderEngine::disableBlending() {
 
 
 void GLES20RenderEngine::bindImageAsFramebuffer(EGLImageKHR image,
-        uint32_t* texName, uint32_t* fbName, uint32_t* status) {
+        uint32_t* texName, uint32_t* fbName, uint32_t* status,
+        bool useReadPixels, int reqWidth, int reqHeight) {
     GLuint tname, name;
-    // turn our EGLImage into a texture
-    glGenTextures(1, &tname);
-    glBindTexture(GL_TEXTURE_2D, tname);
-    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImageOES)image);
+    if (!useReadPixels) {
+        // turn our EGLImage into a texture
+        glGenTextures(1, &tname);
+        glBindTexture(GL_TEXTURE_2D, tname);
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImageOES)image);
 
-    // create a Framebuffer Object to render into
-    glGenFramebuffers(1, &name);
-    glBindFramebuffer(GL_FRAMEBUFFER, name);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tname, 0);
+        // create a Framebuffer Object to render into
+        glGenFramebuffers(1, &name);
+        glBindFramebuffer(GL_FRAMEBUFFER, name);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tname, 0);
+    } else {
+        // since we're going to use glReadPixels() anyways,
+        // use an intermediate renderbuffer instead
+        glGenRenderbuffers(1, &tname);
+        glBindRenderbuffer(GL_RENDERBUFFER, tname);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8_OES, reqWidth, reqHeight);
+        // create a FBO to render into
+        glGenFramebuffers(1, &name);
+        glBindFramebuffer(GL_FRAMEBUFFER, name);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, tname);
+    }
 
     *status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     *texName = tname;
     *fbName = name;
 }
 
-void GLES20RenderEngine::unbindFramebuffer(uint32_t texName, uint32_t fbName) {
+void GLES20RenderEngine::unbindFramebuffer(uint32_t texName, uint32_t fbName,
+        bool useReadPixels) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteFramebuffers(1, &fbName);
-    glDeleteTextures(1, &texName);
+    if (!useReadPixels)
+        glDeleteTextures(1, &texName);
+    else
+        glDeleteRenderbuffers(1, &texName);
 }
 
 void GLES20RenderEngine::setupFillWithColor(float r, float g, float b, float a) {
@@ -268,6 +331,30 @@ void GLES20RenderEngine::drawMesh(const Mesh& mesh) {
 
 void GLES20RenderEngine::dump(String8& result) {
     RenderEngine::dump(result);
+}
+
+void GLES20RenderEngine::setupLayerMasking(const Texture& maskTexture, float alphaThreshold) {
+    glActiveTexture(GL_TEXTURE0 + 1);
+    GLuint target = maskTexture.getTextureTarget();
+    glBindTexture(target, maskTexture.getTextureName());
+    GLenum filter = GL_NEAREST;
+    if (maskTexture.getFiltering()) {
+        filter = GL_LINEAR;
+    }
+    glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, filter);
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, filter);
+
+    if (alphaThreshold < 0) alphaThreshold = 0;
+    if (alphaThreshold > 1.0f) alphaThreshold = 1.0f;
+
+    mState.setMasking(maskTexture, alphaThreshold);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+void GLES20RenderEngine::disableLayerMasking() {
+    mState.disableMasking();
 }
 
 // ---------------------------------------------------------------------------

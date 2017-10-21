@@ -1,4 +1,8 @@
 /*
+ * Copyright (c) 2016, The Linux Foundation. All rights reserved.
+ * Not a Contribution
+ *
+ *
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -54,7 +58,11 @@
 #include <mutex>
 
 #define DEBUG_RESIZE    0
+#ifdef QTI_BSP
+#define NUM_PIXEL_LOW_RES_PANEL (720*1280)
+#endif
 
+#define MAX_POSITION 32767
 namespace android {
 
 // ---------------------------------------------------------------------------
@@ -98,7 +106,8 @@ Layer::Layer(SurfaceFlinger* flinger, const sp<Client>& client,
         mLastFrameNumberReceived(0),
         mUpdateTexImageFailed(false),
         mAutoRefresh(false),
-        mFreezePositionUpdates(false)
+        mFreezePositionUpdates(false),
+        mTransformHint(0)
 {
 #ifdef USE_HWC2
     ALOGV("Creating Layer %s", name.string());
@@ -132,10 +141,12 @@ Layer::Layer(SurfaceFlinger* flinger, const sp<Client>& client,
 #else
     mCurrentState.alpha = 0xFF;
 #endif
+    mCurrentState.blur = 0xFF;
     mCurrentState.layerStack = 0;
     mCurrentState.flags = layerFlags;
     mCurrentState.sequence = 0;
     mCurrentState.requested = mCurrentState.active;
+    mCurrentState.color = 0;
 
     // drawing state & current state are identical
     mDrawingState = mCurrentState;
@@ -366,7 +377,7 @@ Rect Layer::getContentCrop() const {
     return crop;
 }
 
-static Rect reduce(const Rect& win, const Region& exclude) {
+Rect Layer::reduce(const Rect& win, const Region& exclude) const{
     if (CC_LIKELY(exclude.isEmpty())) {
         return win;
     }
@@ -539,7 +550,11 @@ void Layer::setGeometry(
                 to_string(error).c_str(), static_cast<int32_t>(error));
     }
 #else
+#if defined(QTI_BSP) && !defined(QCOM_BSP_LEGACY)
+    if (!isOpaque(s)) {
+#else
     if (!isOpaque(s) || s.alpha != 0xFF) {
+#endif
         layer.setBlending(mPremultipliedAlpha ?
                 HWC_BLENDING_PREMULT :
                 HWC_BLENDING_COVERAGE);
@@ -626,6 +641,7 @@ void Layer::setGeometry(
     }
     const Transform& tr(hw->getTransform());
     layer.setFrame(tr.transform(frame));
+    setPosition(hw, layer, s);
     layer.setCrop(computeCrop(hw));
     layer.setPlaneAlpha(s.alpha);
 #endif
@@ -732,6 +748,13 @@ void Layer::setPerFrameData(const sp<const DisplayDevice>& displayDevice) {
             (mActiveBuffer != nullptr && mActiveBuffer->handle == nullptr)) {
         ALOGV("[%s] Requesting Client composition", mName.string());
         setCompositionType(hwcId, HWC2::Composition::Client);
+#ifndef USE_HWC2
+        error = hwcLayer->setBuffer(nullptr, Fence::NO_FENCE);
+        if (error != HWC2::Error::None) {
+            ALOGE("[%s] Failed to set null buffer: %s (%d)", mName.string(),
+                    to_string(error).c_str(), static_cast<int32_t>(error));
+        }
+#endif
         return;
     }
 
@@ -849,6 +872,7 @@ void Layer::setAcquireFence(const sp<const DisplayDevice>& /* hw */,
             }
         }
     }
+    setAcquiredFenceIfBlit(fenceFd, layer);
     layer.setAcquireFenceFd(fenceFd);
 }
 
@@ -880,21 +904,21 @@ Rect Layer::getPosition(
 // drawing...
 // ---------------------------------------------------------------------------
 
-void Layer::draw(const sp<const DisplayDevice>& hw, const Region& clip) const {
+void Layer::draw(const sp<const DisplayDevice>& hw, const Region& clip) {
     onDraw(hw, clip, false);
 }
 
 void Layer::draw(const sp<const DisplayDevice>& hw,
-        bool useIdentityTransform) const {
+        bool useIdentityTransform) {
     onDraw(hw, Region(hw->bounds()), useIdentityTransform);
 }
 
-void Layer::draw(const sp<const DisplayDevice>& hw) const {
+void Layer::draw(const sp<const DisplayDevice>& hw) {
     onDraw(hw, Region(hw->bounds()), false);
 }
 
 void Layer::onDraw(const sp<const DisplayDevice>& hw, const Region& clip,
-        bool useIdentityTransform) const
+        bool useIdentityTransform)
 {
     ATRACE_CALL();
 
@@ -939,7 +963,8 @@ void Layer::onDraw(const sp<const DisplayDevice>& hw, const Region& clip,
 
     RenderEngine& engine(mFlinger->getRenderEngine());
 
-    if (!blackOutLayer) {
+    if (!blackOutLayer ||
+            ((hw->getDisplayType() == HWC_DISPLAY_PRIMARY) && canAllowGPUForProtected())) {
         // TODO: we could be more subtle with isFixedSize()
         const bool useFiltering = getFiltering() || needsFiltering(hw) || isFixedSize();
 
@@ -1007,6 +1032,16 @@ void Layer::clearWithOpenGL(
     clearWithOpenGL(hw, clip, 0,0,0,0);
 }
 
+void Layer::handleOpenGLDraw(const sp<const DisplayDevice>& /* hw */,
+            Mesh& mesh) const {
+    const State& s(getDrawingState());
+    RenderEngine& engine(mFlinger->getRenderEngine());
+
+    engine.setupLayerBlending(mPremultipliedAlpha, isOpaque(s), s.alpha);
+    engine.drawMesh(mesh);
+    engine.disableBlending();
+}
+
 void Layer::drawWithOpenGL(const sp<const DisplayDevice>& hw,
         const Region& /* clip */, bool useIdentityTransform) const {
     const State& s(getDrawingState());
@@ -1027,6 +1062,40 @@ void Layer::drawWithOpenGL(const sp<const DisplayDevice>& hw,
      * minimal value)? Or, we could make GL behave like HWC -- but this feel
      * like more of a hack.
      */
+#ifdef QTI_BSP
+    const uint32_t hw_w = hw->getWidth();
+    const uint32_t hw_h = hw->getHeight();
+    Rect win(s.active.w, s.active.h);
+    if((hw_w * hw_h) > NUM_PIXEL_LOW_RES_PANEL) {
+        if (!s.crop.isEmpty()) {
+            win = s.crop;
+        }
+
+        win = s.active.transform.transform(win);
+        win.intersect(hw->getViewport(), &win);
+        if (!s.finalCrop.isEmpty()) {
+            if (!win.intersect(s.finalCrop, &win)) {
+                 win.clear();
+            }
+        }
+        win = s.active.transform.inverse().transform(win);
+        win.intersect(Rect(s.active.w, s.active.h), &win);
+        win = reduce(win, s.activeTransparentRegion);
+    } else {
+        win = computeBounds();
+
+        if (!s.finalCrop.isEmpty()) {
+            win = s.active.transform.transform(win);
+            if (!win.intersect(s.finalCrop, &win)) {
+                win.clear();
+            }
+            win = s.active.transform.inverse().transform(win);
+            if (!win.intersect(computeBounds(), &win)) {
+                win.clear();
+            }
+        }
+    }
+#else
     Rect win(computeBounds());
 
     if (!s.finalCrop.isEmpty()) {
@@ -1039,7 +1108,7 @@ void Layer::drawWithOpenGL(const sp<const DisplayDevice>& hw,
             win.clear();
         }
     }
-
+#endif
     float left   = float(win.left)   / float(s.active.w);
     float top    = float(win.top)    / float(s.active.h);
     float right  = float(win.right)  / float(s.active.w);
@@ -1053,10 +1122,7 @@ void Layer::drawWithOpenGL(const sp<const DisplayDevice>& hw,
     texCoords[2] = vec2(right, 1.0f - bottom);
     texCoords[3] = vec2(right, 1.0f - top);
 
-    RenderEngine& engine(mFlinger->getRenderEngine());
-    engine.setupLayerBlending(mPremultipliedAlpha, isOpaque(s), s.alpha);
-    engine.drawMesh(mMesh);
-    engine.disableBlending();
+    handleOpenGLDraw(hw, mMesh);
 }
 
 #ifdef USE_HWC2
@@ -1239,8 +1305,47 @@ void Layer::computeGeometry(const sp<const DisplayDevice>& hw, Mesh& mesh,
     if (!s.crop.isEmpty()) {
         win.intersect(s.crop, &win);
     }
-    // subtract the transparent region and snap to the bounds
+#ifdef QTI_BSP
+    const uint32_t hw_w = hw->getWidth();
+    uint32_t orientation = 0;
+    if((hw_w * hw_h) > NUM_PIXEL_LOW_RES_PANEL) {
+        win = s.active.transform.transform(win);
+        win.intersect(hw->getViewport(), &win);
+        if (!s.finalCrop.isEmpty()) {
+            if (!win.intersect(s.finalCrop, &win)) {
+                 win.clear();
+            }
+        }
+        win = s.active.transform.inverse().transform(win);
+        win.intersect(Rect(s.active.w, s.active.h), &win);
+        win = reduce(win, s.activeTransparentRegion);
+
+        const Transform bufferOrientation(mCurrentTransform);
+        Transform transform(tr * s.active.transform * bufferOrientation);
+        if (mSurfaceFlingerConsumer->getTransformToDisplayInverse()) {
+            uint32_t invTransform =  DisplayDevice::getPrimaryDisplayOrientationTransform();
+            if (invTransform & NATIVE_WINDOW_TRANSFORM_ROT_90) {
+                invTransform ^= NATIVE_WINDOW_TRANSFORM_FLIP_V |
+                      NATIVE_WINDOW_TRANSFORM_FLIP_H;
+            }
+            transform = Transform(invTransform) * transform;
+        }
+        orientation = transform.getOrientation();
+        if (!(orientation | mCurrentTransform | mTransformHint)) {
+            if (!useIdentityTransform) {
+                win = s.active.transform.transform(win);
+                win.intersect(hw->getViewport(), &win);
+            }
+        }
+    } else {
+        win = reduce(win, s.activeTransparentRegion);
+    }
+#else
     win = reduce(win, s.activeTransparentRegion);
+#endif
+
+
+    // subtract the transparent region and snap to the bounds
 
     vec2 lt = vec2(win.left, win.top);
     vec2 lb = vec2(win.left, win.bottom);
@@ -1248,12 +1353,27 @@ void Layer::computeGeometry(const sp<const DisplayDevice>& hw, Mesh& mesh,
     vec2 rt = vec2(win.right, win.top);
 
     if (!useIdentityTransform) {
+#ifdef QTI_BSP
+        if((hw_w * hw_h) > NUM_PIXEL_LOW_RES_PANEL) {
+            if (orientation | mCurrentTransform | mTransformHint) {
+                lt = s.active.transform.transform(lt);
+                lb = s.active.transform.transform(lb);
+                rb = s.active.transform.transform(rb);
+                rt = s.active.transform.transform(rt);
+            }
+        } else {
+            lt = s.active.transform.transform(lt);
+            lb = s.active.transform.transform(lb);
+            rb = s.active.transform.transform(rb);
+            rt = s.active.transform.transform(rt);
+        }
+#else
         lt = s.active.transform.transform(lt);
         lb = s.active.transform.transform(lb);
         rb = s.active.transform.transform(rb);
         rt = s.active.transform.transform(rt);
+#endif
     }
-
     if (!s.finalCrop.isEmpty()) {
         boundPoint(&lt, s.finalCrop);
         boundPoint(&lb, s.finalCrop);
@@ -1574,6 +1694,10 @@ uint32_t Layer::setTransactionFlags(uint32_t flags) {
 bool Layer::setPosition(float x, float y, bool immediate) {
     if (mCurrentState.requested.transform.tx() == x && mCurrentState.requested.transform.ty() == y)
         return false;
+    if ((y > MAX_POSITION) || (x > MAX_POSITION)) {
+        ALOGE("%s:: failed %s  x = %f y = %f",__FUNCTION__,mName.string(),x, y);
+        return false;
+    }
     mCurrentState.sequence++;
 
     // We update the requested and active position simultaneously because
@@ -1596,6 +1720,14 @@ bool Layer::setLayer(uint32_t z) {
     mCurrentState.sequence++;
     mCurrentState.z = z;
     mCurrentState.modified = true;
+    setTransactionFlags(eTransactionNeeded);
+    return true;
+}
+bool Layer::setBlur(uint8_t blur) {
+    if (mCurrentState.blur == blur)
+        return false;
+    mCurrentState.sequence++;
+    mCurrentState.blur = blur;
     setTransactionFlags(eTransactionNeeded);
     return true;
 }
@@ -1673,6 +1805,16 @@ bool Layer::setOverrideScalingMode(int32_t scalingMode) {
     if (scalingMode == mOverrideScalingMode)
         return false;
     mOverrideScalingMode = scalingMode;
+    setTransactionFlags(eTransactionNeeded);
+    return true;
+}
+
+bool Layer::setColor(uint32_t color) {
+    if (mCurrentState.color == color)
+        return false;
+    mCurrentState.sequence++;
+    mCurrentState.color = color;
+    mCurrentState.modified = true;
     setTransactionFlags(eTransactionNeeded);
     return true;
 }
@@ -2056,9 +2198,14 @@ Region Layer::latchBuffer(bool& recomputeVisibleRegions)
 
             // Remove any stale buffers that have been dropped during
             // updateTexImage
-            while (mQueueItems[0].mFrameNumber != currentFrameNumber) {
+            while ((mQueuedFrames > 0) && (mQueueItems[0].mFrameNumber != currentFrameNumber)) {
                 mQueueItems.removeAt(0);
                 android_atomic_dec(&mQueuedFrames);
+            }
+
+            if (mQueuedFrames == 0) {
+                ALOGE("[%s] mQueuedFrames is zero !!", mName.string());
+                return outDirtyRegion;
             }
 
             mQueueItems.removeAt(0);
@@ -2167,7 +2314,7 @@ uint32_t Layer::getEffectiveUsage(uint32_t usage) const
     return usage;
 }
 
-void Layer::updateTransformHint(const sp<const DisplayDevice>& hw) const {
+void Layer::updateTransformHint(const sp<const DisplayDevice>& hw) {
     uint32_t orientation = 0;
     if (!mFlinger->mDebugDisableTransformHint) {
         // The transform hint is used to improve performance, but we can
@@ -2180,6 +2327,7 @@ void Layer::updateTransformHint(const sp<const DisplayDevice>& hw) const {
         }
     }
     mSurfaceFlingerConsumer->setTransformHint(orientation);
+    mTransformHint = orientation;
 }
 
 // ----------------------------------------------------------------------------
@@ -2206,9 +2354,9 @@ void Layer::dump(String8& result, Colorizer& colorizer) const
             "crop=(%4d,%4d,%4d,%4d), finalCrop=(%4d,%4d,%4d,%4d), "
             "isOpaque=%1d, invalidate=%1d, "
 #ifdef USE_HWC2
-            "alpha=%.3f, flags=0x%08x, tr=[%.2f, %.2f][%.2f, %.2f]\n"
+            "alpha=%.3f, blur=0x%02x, flags=0x%08x, tr=[%.2f, %.2f][%.2f, %.2f]\n"
 #else
-            "alpha=0x%02x, flags=0x%08x, tr=[%.2f, %.2f][%.2f, %.2f]\n"
+            "alpha=0x%02x, blur=0x%02x, flags=0x%08x, tr=[%.2f, %.2f][%.2f, %.2f]\n"
 #endif
             "      client=%p\n",
             s.layerStack, s.z, s.active.transform.tx(), s.active.transform.ty(), s.active.w, s.active.h,
@@ -2217,7 +2365,7 @@ void Layer::dump(String8& result, Colorizer& colorizer) const
             s.finalCrop.left, s.finalCrop.top,
             s.finalCrop.right, s.finalCrop.bottom,
             isOpaque(s), contentDirty,
-            s.alpha, s.flags,
+            s.alpha, s.blur, s.flags,
             s.active.transform[0][0], s.active.transform[0][1],
             s.active.transform[1][0], s.active.transform[1][1],
             client.get());

@@ -145,6 +145,7 @@ public:
     status_t    setSize(const sp<IBinder>& id, uint32_t w, uint32_t h);
     status_t    setCrop(const sp<IBinder>& id, const Rect& crop);
     status_t    setFinalCrop(const sp<IBinder>& id, const Rect& crop);
+    status_t    setColor(const sp<IBinder>& id, uint32_t color);
     status_t    setLayerStack(const sp<IBinder>& id, uint32_t layerStack);
     status_t    deferTransactionUntil(const sp<IBinder>& id,
             const sp<IBinder>& handle, uint64_t frameNumber);
@@ -186,6 +187,11 @@ public:
             uint32_t orientation,
             const Rect& layerStackRect,
             const Rect& displayRect);
+
+    status_t    setBlur(const sp<IBinder>& id, float blur);
+    status_t    setBlurMaskSurface(const sp<IBinder>& id, const sp<IBinder>& maskSurfaceId);
+    status_t    setBlurMaskSampling(const sp<IBinder>& id, uint32_t blurMaskSampling);
+    status_t    setBlurMaskAlphaThreshold(const sp<IBinder>& id, float alpha);
 
 private:
     virtual void onFirstRef();

@@ -1,4 +1,8 @@
 /*
+ * Copyright (c) 2016, The Linux Foundation. All rights reserved.
+ * Not a Contribution
+ *
+ *
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -48,6 +52,10 @@
 
 #include "../Layer.h"           // needed only for debugging
 #include "../SurfaceFlinger.h"
+
+#ifdef QTI_BSP
+#include <hardware/display_defs.h>
+#endif
 
 namespace android {
 
@@ -191,6 +199,11 @@ HWComposer::HWComposer(
     if (needVSyncThread) {
         // we don't have VSYNC support, we need to fake it
         mVSyncThread = new VSyncThread(*this);
+    }
+
+    mDimComp = 0;
+    if (mHwc) {
+        mHwc->query(mHwc, HWC_BACKGROUND_LAYER_SUPPORTED, &mDimComp);
     }
 }
 
@@ -370,7 +383,12 @@ status_t HWComposer::queryDisplayProperties(int disp) {
         return err;
     }
 
-    mDisplayData[disp].currentConfig = 0;
+    int currentConfig = getActiveConfig(disp);
+    if (currentConfig < 0 || currentConfig > static_cast<int>((numConfigs-1))) {
+        ALOGE("%s: Invalid display config! %d", __FUNCTION__, currentConfig);
+        currentConfig = 0;
+    }
+    mDisplayData[disp].currentConfig = currentConfig;
     for (size_t c = 0; c < numConfigs; ++c) {
         err = mHwc->getDisplayAttributes(mHwc, disp, configs[c],
                 DISPLAY_ATTRIBUTES, values);
@@ -424,7 +442,11 @@ status_t HWComposer::queryDisplayProperties(int disp) {
     }
 
     // FIXME: what should we set the format to?
+#ifdef USE_BGRA_8888
+    mDisplayData[disp].format = HAL_PIXEL_FORMAT_BGRA_8888;
+#else
     mDisplayData[disp].format = HAL_PIXEL_FORMAT_RGBA_8888;
+#endif
     mDisplayData[disp].connected = true;
     return NO_ERROR;
 }
@@ -486,7 +508,11 @@ sp<Fence> HWComposer::getDisplayFence(int disp) const {
 
 uint32_t HWComposer::getFormat(int disp) const {
     if (static_cast<uint32_t>(disp) >= MAX_HWC_DISPLAYS || !mAllocatedDisplayIDs.hasBit(disp)) {
+#ifdef USE_BGRA_8888
+        return HAL_PIXEL_FORMAT_BGRA_8888;
+#else
         return HAL_PIXEL_FORMAT_RGBA_8888;
+#endif
     } else {
         return mDisplayData[disp].format;
     }
@@ -708,13 +734,13 @@ status_t HWComposer::prepare() {
             disp.hasFbComp = false;
             disp.hasOvComp = false;
             if (disp.list) {
-                for (size_t i=0 ; i<disp.list->numHwLayers ; i++) {
-                    hwc_layer_1_t& l = disp.list->hwLayers[i];
+                for (size_t j = 0; j < disp.list->numHwLayers; j++) {
+                    hwc_layer_1_t& l = disp.list->hwLayers[j];
 
                     //ALOGD("prepare: %d, type=%d, handle=%p",
                     //        i, l.compositionType, l.handle);
 
-                    if (l.flags & HWC_SKIP_LAYER) {
+                    if (i == DisplayDevice::DISPLAY_PRIMARY && l.flags & HWC_SKIP_LAYER) {
                         l.compositionType = HWC_FRAMEBUFFER;
                     }
                     if (l.compositionType == HWC_FRAMEBUFFER) {
@@ -722,6 +748,9 @@ status_t HWComposer::prepare() {
                     }
                     if (l.compositionType == HWC_OVERLAY) {
                         disp.hasOvComp = true;
+                    }
+                    if (isCompositionTypeBlit(l.compositionType)) {
+                        disp.hasFbComp = true;
                     }
                     if (l.compositionType == HWC_CURSOR_OVERLAY) {
                         disp.hasOvComp = true;
@@ -823,13 +852,28 @@ status_t HWComposer::setPowerMode(int disp, int mode) {
 status_t HWComposer::setActiveConfig(int disp, int mode) {
     LOG_FATAL_IF(disp >= VIRTUAL_DISPLAY_ID_BASE);
     DisplayData& dd(mDisplayData[disp]);
-    dd.currentConfig = mode;
     if (mHwc && hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_4)) {
-        return (status_t)mHwc->setActiveConfig(mHwc, disp, mode);
+        status_t status = static_cast<status_t>(
+                mHwc->setActiveConfig(mHwc, disp, mode));
+        if (status == NO_ERROR) {
+            dd.currentConfig = mode;
+        } else {
+            ALOGE("%s Failed to set new config (%d) for display (%d)",
+                    __FUNCTION__, mode, disp);
+        }
     } else {
         LOG_FATAL_IF(mode != 0);
     }
     return NO_ERROR;
+}
+
+int HWComposer::getActiveConfig(int disp) const {
+    LOG_FATAL_IF(disp >= VIRTUAL_DISPLAY_ID_BASE);
+    if (mHwc && hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_4)) {
+        return mHwc->getActiveConfig(mHwc, disp);
+    } else {
+        return 0;
+    }
 }
 
 void HWComposer::disconnectDisplay(int disp) {
@@ -853,7 +897,11 @@ int HWComposer::getVisualID() const {
         // FIXME: temporary hack until HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED
         // is supported by the implementation. we can only be in this case
         // if we have HWC 1.1
+#ifdef USE_BGRA_8888
+        return HAL_PIXEL_FORMAT_BGRA_8888;
+#else
         return HAL_PIXEL_FORMAT_RGBA_8888;
+#endif
         //return HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
     } else {
         return mFbDev->format;
@@ -1012,6 +1060,18 @@ public:
             getLayer()->flags &= ~HWC_SKIP_LAYER;
         }
     }
+    virtual void setDim(uint32_t color) {
+        getLayer()->flags |= 0x80000000;
+#ifdef QTI_BSP
+        // Set RGBA color on HWC Dim layer
+        getLayer()->color.r = uint8_t((color & 0xFF000000) >> 24);
+        getLayer()->color.g = uint8_t((color & 0x00FF0000) >> 16);
+        getLayer()->color.b = uint8_t((color & 0x0000FF00) >> 8);
+        getLayer()->color.a = uint8_t(color & 0x000000FF);
+#else
+        (void) color;
+#endif
+    }
     virtual void setIsCursorLayerHint(bool isCursor) {
         if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_4)) {
             if (isCursor) {
@@ -1081,7 +1141,7 @@ public:
     virtual void setBuffer(const sp<GraphicBuffer>& buffer) {
         if (buffer == 0 || buffer->handle == 0) {
             getLayer()->compositionType = HWC_FRAMEBUFFER;
-            getLayer()->flags |= HWC_SKIP_LAYER;
+            getLayer()->flags |=  (getLayer()->flags & 0x80000000) ? 0 : HWC_SKIP_LAYER;
             getLayer()->handle = 0;
         } else {
             if (getLayer()->compositionType == HWC_SIDEBAND) {
@@ -1094,6 +1154,18 @@ public:
     }
     virtual void onDisplayed() {
         getLayer()->acquireFenceFd = -1;
+    }
+
+    virtual void setAnimating(bool animating) {
+        if (animating) {
+#ifdef QTI_BSP
+            getLayer()->flags |= HWC_SCREENSHOT_ANIMATOR_LAYER;
+#endif
+        } else {
+#ifdef QTI_BSP
+            getLayer()->flags &= ~HWC_SCREENSHOT_ANIMATOR_LAYER;
+#endif
+        }
     }
 
 protected:
@@ -1240,7 +1312,7 @@ void HWComposer::dump(String8& result) const {
                     if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_3)) {
                         result.appendFormat(
                                 " %9s | %08" PRIxPTR " | %04x | %04x | %02x | %04x | %-11s |%7.1f,%7.1f,%7.1f,%7.1f |%5d,%5d,%5d,%5d | %s\n",
-                                        compositionTypeName[type],
+                                        (isCompositionTypeBlit(l.compositionType)) ? "HWC_BLIT" : compositionTypeName[type],
                                         intptr_t(l.handle), l.hints, l.flags, l.transform, l.blending, formatStr.string(),
                                         l.sourceCropf.left, l.sourceCropf.top, l.sourceCropf.right, l.sourceCropf.bottom,
                                         l.displayFrame.left, l.displayFrame.top, l.displayFrame.right, l.displayFrame.bottom,
@@ -1248,7 +1320,7 @@ void HWComposer::dump(String8& result) const {
                     } else {
                         result.appendFormat(
                                 " %9s | %08" PRIxPTR " | %04x | %04x | %02x | %04x | %-11s |%7d,%7d,%7d,%7d |%5d,%5d,%5d,%5d | %s\n",
-                                        compositionTypeName[type],
+                                        (isCompositionTypeBlit(l.compositionType)) ? "HWC_BLIT" : compositionTypeName[type],
                                         intptr_t(l.handle), l.hints, l.flags, l.transform, l.blending, formatStr.string(),
                                         l.sourceCrop.left, l.sourceCrop.top, l.sourceCrop.right, l.sourceCrop.bottom,
                                         l.displayFrame.left, l.displayFrame.top, l.displayFrame.right, l.displayFrame.bottom,
@@ -1260,7 +1332,7 @@ void HWComposer::dump(String8& result) const {
     }
 
     if (mHwc && mHwc->dump) {
-        const size_t SIZE = 4096;
+        const size_t SIZE = 16*1024;
         char buffer[SIZE];
         mHwc->dump(mHwc, buffer, SIZE);
         result.append(buffer);
@@ -1326,7 +1398,11 @@ bool HWComposer::VSyncThread::threadLoop() {
 HWComposer::DisplayData::DisplayData()
 :   configs(),
     currentConfig(0),
+#ifdef USE_BGRA_8888
+    format(HAL_PIXEL_FORMAT_BGRA_8888),
+#else
     format(HAL_PIXEL_FORMAT_RGBA_8888),
+#endif
     connected(false),
     hasFbComp(false), hasOvComp(false),
     capacity(0), list(NULL),

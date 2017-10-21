@@ -72,6 +72,7 @@ public:
     status_t    setMatrix(float dsdx, float dtdx, float dsdy, float dtdy);
     status_t    setCrop(const Rect& crop);
     status_t    setFinalCrop(const Rect& crop);
+    status_t    setColor(uint32_t color);
 
     // If the size changes in this transaction, all geometry updates specified
     // in this transaction will not complete until a buffer of the new size
@@ -98,6 +99,11 @@ public:
     status_t getLayerFrameStats(FrameStats* outStats) const;
 
     status_t getTransformToDisplayInverse(bool* outTransformToDisplayInverse) const;
+
+    status_t    setBlur(float blur = 0);
+    status_t    setBlurMaskSurface(const sp<SurfaceControl>& maskSurface);
+    status_t    setBlurMaskSampling(uint32_t blurMaskSampling);
+    status_t    setBlurMaskAlphaThreshold(float alpha);
 
 private:
     // can't be copied

@@ -32,6 +32,10 @@ status_t layer_state_t::write(Parcel& output) const
     output.writeUint32(w);
     output.writeUint32(h);
     output.writeUint32(layerStack);
+    output.writeFloat(blur);
+    output.writeStrongBinder(blurMaskSurface);
+    output.writeUint32(blurMaskSampling);
+    output.writeFloat(blurMaskAlphaThreshold);
     output.writeFloat(alpha);
     output.writeUint32(flags);
     output.writeUint32(mask);
@@ -42,6 +46,7 @@ status_t layer_state_t::write(Parcel& output) const
     output.writeStrongBinder(handle);
     output.writeUint64(frameNumber);
     output.writeInt32(overrideScalingMode);
+    output.writeUint32(color);
     output.write(transparentRegion);
     return NO_ERROR;
 }
@@ -56,6 +61,10 @@ status_t layer_state_t::read(const Parcel& input)
     w = input.readUint32();
     h = input.readUint32();
     layerStack = input.readUint32();
+    blur = input.readFloat();
+    blurMaskSurface = input.readStrongBinder();
+    blurMaskSampling = input.readUint32();
+    blurMaskAlphaThreshold = input.readFloat();
     alpha = input.readFloat();
     flags = static_cast<uint8_t>(input.readUint32());
     mask = static_cast<uint8_t>(input.readUint32());
@@ -70,6 +79,7 @@ status_t layer_state_t::read(const Parcel& input)
     handle = input.readStrongBinder();
     frameNumber = input.readUint64();
     overrideScalingMode = input.readInt32();
+    color = input.readUint32();
     input.read(transparentRegion);
     return NO_ERROR;
 }
